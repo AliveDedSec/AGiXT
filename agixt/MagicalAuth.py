@@ -1,11 +1,16 @@
-from DB import User, FailedLogins, UserOAuth, OAuthProvider, get_session
+from DB import (
+    User,
+    FailedLogins,
+    UserOAuth,
+    OAuthProvider,
+    UserPreferences,
+    get_session,
+)
 from OAuth2Providers import get_sso_provider
 from Models import UserInfo, Register, Login
 from fastapi import Header, HTTPException
 from Globals import getenv
 from datetime import datetime, timedelta
-from Agent import add_agent
-from agixtsdk import AGiXTSDK
 from fastapi import HTTPException
 from sendgrid import SendGridAPIClient
 from sendgrid.helpers.mail import (
@@ -20,6 +25,8 @@ import pyotp
 import requests
 import logging
 import jwt
+import json
+import os
 
 
 logging.basicConfig(
@@ -31,7 +38,7 @@ Required environment variables:
 
 - SENDGRID_API_KEY: SendGrid API key
 - SENDGRID_FROM_EMAIL: Default email address to send emails from
-- ENCRYPTION_SECRET: Encryption key to encrypt and decrypt data
+- AGIXT_API_KEY: Encryption key to encrypt and decrypt data
 - MAGIC_LINK_URL: URL to send in the email for the user to click on
 - REGISTRATION_WEBHOOK: URL to send a POST request to when a user registers
 """
@@ -40,78 +47,41 @@ Required environment variables:
 def is_agixt_admin(email: str = "", api_key: str = ""):
     if api_key == getenv("AGIXT_API_KEY"):
         return True
+    api_key = str(api_key).replace("Bearer ", "").replace("bearer ", "")
     session = get_session()
-    user = session.query(User).filter_by(email=email).first()
+    try:
+        user = session.query(User).filter_by(email=email).first()
+    except:
+        session.close()
+        return False
     if not user:
+        session.close()
         return False
     if user.admin is True:
+        session.close()
         return True
+    session.close()
     return False
 
 
-def webhook_create_user(
-    api_key: str,
-    email: str,
-    role: str = "user",
-    agent_name: str = "",
-    settings: dict = {},
-    commands: dict = {},
-    training_urls: list = [],
-    github_repos: list = [],
-    ApiClient: AGiXTSDK = AGiXTSDK(),
-):
-    if not is_agixt_admin(email=email, api_key=api_key):
-        return {"error": "Access Denied"}, 403
-    session = get_session()
-    email = email.lower()
-    user_exists = session.query(User).filter_by(email=email).first()
-    if user_exists:
-        session.close()
-        return {"error": "User already exists"}, 400
-    admin = True if role.lower() == "admin" else False
-    user = User(
-        email=email,
-        admin=admin,
-        first_name="",
-        last_name="",
-    )
-    session.add(user)
-    session.commit()
-    session.close()
-    if agent_name != "" and agent_name is not None:
-        add_agent(
-            agent_name=agent_name,
-            provider_settings=settings,
-            commands=commands,
-            user=email,
-        )
-    if training_urls != []:
-        for url in training_urls:
-            ApiClient.learn_url(agent_name=agent_name, url=url)
-    if github_repos != []:
-        for repo in github_repos:
-            ApiClient.learn_github_repo(agent_name=agent_name, github_repo=repo)
-    return {"status": "Success"}, 200
-
-
 def verify_api_key(authorization: str = Header(None)):
-    ENCRYPTION_SECRET = getenv("ENCRYPTION_SECRET")
+    AGIXT_API_KEY = getenv("AGIXT_API_KEY")
     if getenv("AUTH_PROVIDER") == "magicalauth":
-        ENCRYPTION_SECRET = f'{ENCRYPTION_SECRET}{datetime.now().strftime("%Y%m%d")}'
+        AGIXT_API_KEY = f'{AGIXT_API_KEY}{datetime.now().strftime("%Y%m%d")}'
     authorization = str(authorization).replace("Bearer ", "").replace("bearer ", "")
-    if ENCRYPTION_SECRET:
+    if AGIXT_API_KEY:
         if authorization is None:
             raise HTTPException(
                 status_code=401, detail="Authorization header is missing"
             )
-        if authorization == ENCRYPTION_SECRET:
+        if authorization == AGIXT_API_KEY:
             return "ADMIN"
         try:
-            if authorization == ENCRYPTION_SECRET:
+            if authorization == AGIXT_API_KEY:
                 return "ADMIN"
             token = jwt.decode(
                 jwt=authorization,
-                key=ENCRYPTION_SECRET,
+                key=AGIXT_API_KEY,
                 algorithms=["HS256"],
             )
             db = get_session()
@@ -122,6 +92,21 @@ def verify_api_key(authorization: str = Header(None)):
             raise HTTPException(status_code=401, detail="Invalid API Key")
     else:
         return authorization
+
+
+def get_user_id(user: str):
+    session = get_session()
+    user_data = session.query(User).filter(User.email == user).first()
+    if user_data is None:
+        session.close()
+        raise HTTPException(status_code=404, detail=f"User {user} not found.")
+    try:
+        user_id = user_data.id
+    except Exception as e:
+        session.close()
+        raise HTTPException(status_code=404, detail=f"User {user} not found.")
+    session.close()
+    return user_id
 
 
 def send_email(
@@ -163,7 +148,7 @@ def send_email(
 
 class MagicalAuth:
     def __init__(self, token: str = None):
-        encryption_key = getenv("ENCRYPTION_SECRET")
+        encryption_key = getenv("AGIXT_API_KEY")
         self.link = getenv("MAGIC_LINK_URL")
         self.encryption_key = f'{encryption_key}{datetime.now().strftime("%Y%m%d")}'
         self.token = (
@@ -200,6 +185,8 @@ class MagicalAuth:
             if token
             else None
         )
+        if self.token:
+            self.token = str(self.token).replace("Bearer ", "").replace("bearer ", "")
         try:
             # Decode jwt
             decoded = jwt.decode(
@@ -347,11 +334,12 @@ class MagicalAuth:
             )
         user_id = user_info["sub"]
         user = session.query(User).filter(User.id == user_id).first()
-        session.close()
         if user is None:
+            session.close()
             raise HTTPException(status_code=404, detail="User not found")
         if str(user.id) == str(user_id):
             return user
+        session.close()
         self.add_failed_login(ip_address=ip_address)
         raise HTTPException(
             status_code=401,
@@ -365,6 +353,11 @@ class MagicalAuth:
         new_user.email = new_user.email.lower()
         self.email = new_user.email
         allowed_domains = getenv("ALLOWED_DOMAINS")
+        registration_disabled = getenv("REGISTRATION_DISABLED").lower() == "true"
+        if registration_disabled:
+            raise HTTPException(
+                status_code=403, detail="Registration is disabled for this server."
+            )
         if allowed_domains is None or allowed_domains == "":
             allowed_domains = "*"
         if allowed_domains != "*":
@@ -392,6 +385,14 @@ class MagicalAuth:
         )
         session.add(user)
         session.commit()
+        # Add default user preferences
+        user_preferences = UserPreferences(
+            user_id=user.id,
+            pref_key="timezone",
+            pref_value=getenv("TZ"),
+        )
+        session.add(user_preferences)
+        session.commit()
         session.close()
         # Send registration webhook out to third party application such as AGiXT to create a user there.
         registration_webhook = getenv("REGISTRATION_WEBHOOK")
@@ -400,7 +401,7 @@ class MagicalAuth:
                 requests.post(
                     registration_webhook,
                     json={"email": self.email},
-                    headers={"Authorization": getenv("ENCRYPTION_SECRET")},
+                    headers={"Authorization": getenv("AGIXT_API_KEY")},
                 )
             except Exception as e:
                 pass
@@ -414,12 +415,32 @@ class MagicalAuth:
         session = get_session()
         user = session.query(User).filter(User.id == user.id).first()
         allowed_keys = list(UserInfo.__annotations__.keys())
+        user_preferences = (
+            session.query(UserPreferences)
+            .filter(UserPreferences.user_id == user.id)
+            .all()
+        )
         for key, value in kwargs.items():
             if key in allowed_keys:
                 setattr(user, key, value)
+            else:
+                # Check if there is a user preference record, create one if not, update if so.
+                user_preference = next(
+                    (x for x in user_preferences if x.pref_key == key),
+                    None,
+                )
+                if user_preference is None:
+                    user_preference = UserPreferences(
+                        user_id=user.id,
+                        pref_key=key,
+                        pref_value=value,
+                    )
+                    session.add(user_preference)
+                else:
+                    user_preference.pref_value = value
         session.commit()
         session.close()
-        return "User updated successfully"
+        return "User updated successfully."
 
     def delete_user(self):
         user = verify_api_key(self.token)
@@ -508,3 +529,55 @@ class MagicalAuth:
             referrer=referrer,
             send_link=False,
         )
+
+    def registration_requirements(self):
+        if not os.path.exists("registration_requirements.json"):
+            requirements = {}
+        else:
+            with open("registration_requirements.json", "r") as file:
+                requirements = json.load(file)
+        if not requirements:
+            requirements = {}
+        if "subscription" not in requirements:
+            requirements["subscription"] = "None"
+        return requirements
+
+    def get_user_preferences(self):
+        user = verify_api_key(self.token)
+        if user is None:
+            raise HTTPException(status_code=404, detail="User not found")
+        session = get_session()
+        user_preferences = (
+            session.query(UserPreferences)
+            .filter(UserPreferences.user_id == user.id)
+            .all()
+        )
+        user_preferences = {x.pref_key: x.pref_value for x in user_preferences}
+        user_requirements = self.registration_requirements()
+        if not user_preferences:
+            return {}
+        if "subscription" in user_requirements:
+            if "subscription" not in user_preferences:
+                user_preferences["subscription"] = "none"
+            if str(user_preferences["subscription"]).lower() != "none":
+                if user.is_active is False:
+                    raise HTTPException(
+                        status_code=402, detail=user_preferences["subscription"]
+                    )
+        session.close()
+        if "email" in user_preferences:
+            del user_preferences["email"]
+        if "first_name" in user_preferences:
+            del user_preferences["first_name"]
+        if "last_name" in user_preferences:
+            del user_preferences["last_name"]
+        if "missing_requirements" in user_preferences:
+            del user_preferences["missing_requirements"]
+        missing_requirements = []
+        for key, value in user_requirements.items():
+            if key not in user_preferences:
+                if key != "subscription":
+                    missing_requirements.append({key: value})
+        if missing_requirements:
+            user_preferences["missing_requirements"] = missing_requirements
+        return user_preferences

@@ -12,6 +12,7 @@ from readers.github import GithubReader
 from readers.file import FileReader
 from readers.arxiv import ArxivReader
 from readers.youtube import YoutubeReader
+from datetime import datetime
 from Models import (
     AgentMemoryQuery,
     TextMemoryInput,
@@ -27,7 +28,13 @@ from Models import (
     UserInput,
     FeedbackInput,
 )
+import logging
+from Globals import getenv
 
+logging.basicConfig(
+    level=getenv("LOG_LEVEL"),
+    format=getenv("LOG_FORMAT"),
+)
 app = APIRouter()
 
 
@@ -142,12 +149,12 @@ async def learn_file(
     user=Depends(verify_api_key),
     authorization: str = Header(None),
 ) -> ResponseMessage:
-    ApiClient = get_api_client(authorization=authorization)
     # Strip any path information from the file name
+    agent = AGiXT(user=user, agent_name=agent_name, api_key=authorization)
     file.file_name = os.path.basename(file.file_name)
-    base_path = os.path.join(os.getcwd(), "WORKSPACE")
-    file_path = os.path.normpath(os.path.join(base_path, file.file_name))
-    if not file_path.startswith(base_path):
+    file_path = os.path.normpath(os.path.join(agent.agent_workspace, file.file_name))
+    logging.info(f"File path: {file_path}")
+    if not file_path.startswith(agent.agent_workspace):
         raise Exception("Path given not allowed")
     try:
         file_content = base64.b64decode(file.file_content)
@@ -155,28 +162,17 @@ async def learn_file(
         file_content = file.file_content.encode("utf-8")
     with open(file_path, "wb") as f:
         f.write(file_content)
-    try:
-        agent_config = Agent(
-            agent_name=agent_name, user=user, ApiClient=ApiClient
-        ).get_agent_config()
-        await FileReader(
-            agent_name=agent_name,
-            agent_config=agent_config,
-            collection_number=str(file.collection_number),
-            ApiClient=ApiClient,
-            user=user,
-        ).write_file_to_memory(file_path=file_path)
-        try:
-            os.remove(file_path)
-        except Exception:
-            pass
-        return ResponseMessage(message="Agent learned the content from the file.")
-    except Exception as e:
-        try:
-            os.remove(file_path)
-        except Exception:
-            pass
-        raise HTTPException(status_code=500, detail=str(e))
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    logging.info(f"File {file.file_name} uploaded on {timestamp}.")
+    logging.info(f"URL of file: {agent.outputs}/{file.file_name}")
+    response = await agent.learn_from_file(
+        file_url=f"{agent.outputs}/{file.file_name}",
+        file_name=file.file_name,
+        user_input=f"File {file.file_name} uploaded on {timestamp}.",
+        collection_id=str(file.collection_number),
+        conversation_name=f"Agent Training on {datetime.now().strftime('%Y-%m-%d')} by {user}",
+    )
+    return ResponseMessage(message=response)
 
 
 @app.post(
@@ -371,7 +367,7 @@ async def agent_reader(
 
 @app.delete(
     "/api/agent/{agent_name}/memory",
-    tags=["Memory", "Admin"],
+    tags=["Memory"],
     dependencies=[Depends(verify_api_key)],
 )
 async def wipe_agent_memories(
@@ -393,7 +389,7 @@ async def wipe_agent_memories(
 
 @app.delete(
     "/api/agent/{agent_name}/memory/{collection_number}",
-    tags=["Memory", "Admin"],
+    tags=["Memory"],
     dependencies=[Depends(verify_api_key)],
 )
 async def wipe_agent_memories(
@@ -445,7 +441,7 @@ async def delete_agent_memory(
 # Create dataset
 @app.post(
     "/api/agent/{agent_name}/memory/dataset",
-    tags=["Memory", "Admin"],
+    tags=["Memory"],
     dependencies=[Depends(verify_api_key)],
     summary="Create a dataset from the agent's memories",
 )
@@ -496,7 +492,7 @@ async def get_dpo_response(
 # Train model
 @app.post(
     "/api/agent/{agent_name}/memory/dataset/{dataset_name}/finetune",
-    tags=["Memory", "Admin"],
+    tags=["Memory"],
     dependencies=[Depends(verify_api_key)],
     summary="Fine tune a language model with the agent's memories as a synthetic dataset",
 )
@@ -531,7 +527,7 @@ async def fine_tune_model(
 # Delete memories from external source
 @app.delete(
     "/api/agent/{agent_name}/memory/external_source",
-    tags=["Memory", "Admin"],
+    tags=["Memory"],
     dependencies=[Depends(verify_api_key)],
 )
 async def delete_memories_from_external_source(

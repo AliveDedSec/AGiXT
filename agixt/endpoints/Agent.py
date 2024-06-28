@@ -1,6 +1,5 @@
 from typing import Dict
 from fastapi import APIRouter, HTTPException, Depends, Header
-from Interactions import Interactions
 from XT import AGiXT
 from Websearch import Websearch
 from Globals import getenv
@@ -33,7 +32,7 @@ import os
 app = APIRouter()
 
 
-@app.post("/api/agent", tags=["Agent", "Admin"], dependencies=[Depends(verify_api_key)])
+@app.post("/api/agent", tags=["Agent"], dependencies=[Depends(verify_api_key)])
 async def addagent(
     agent: AgentSettings,
     user=Depends(verify_api_key),
@@ -64,9 +63,7 @@ async def addagent(
     return {"message": "Agent added."}
 
 
-@app.post(
-    "/api/agent/import", tags=["Agent", "Admin"], dependencies=[Depends(verify_api_key)]
-)
+@app.post("/api/agent/import", tags=["Agent"], dependencies=[Depends(verify_api_key)])
 async def import_agent(
     agent: AgentConfig, user=Depends(verify_api_key), authorization: str = Header(None)
 ) -> Dict[str, str]:
@@ -82,7 +79,7 @@ async def import_agent(
 
 @app.patch(
     "/api/agent/{agent_name}",
-    tags=["Agent", "Admin"],
+    tags=["Agent"],
     dependencies=[Depends(verify_api_key)],
 )
 async def renameagent(
@@ -99,7 +96,7 @@ async def renameagent(
 
 @app.put(
     "/api/agent/{agent_name}",
-    tags=["Agent", "Admin"],
+    tags=["Agent"],
     dependencies=[Depends(verify_api_key)],
 )
 async def update_agent_settings(
@@ -119,7 +116,7 @@ async def update_agent_settings(
 
 @app.put(
     "/api/agent/{agent_name}/commands",
-    tags=["Agent", "Admin"],
+    tags=["Agent"],
     dependencies=[Depends(verify_api_key)],
 )
 async def update_agent_commands(
@@ -139,7 +136,7 @@ async def update_agent_commands(
 
 @app.delete(
     "/api/agent/{agent_name}",
-    tags=["Agent", "Admin"],
+    tags=["Agent"],
     dependencies=[Depends(verify_api_key)],
 )
 async def deleteagent(
@@ -162,12 +159,22 @@ async def deleteagent(
 @app.get("/api/agent", tags=["Agent"], dependencies=[Depends(verify_api_key)])
 async def getagents(user=Depends(verify_api_key)):
     agents = get_agents(user=user)
+    if getenv("EZLOCALAI_URI") != "http://localhost:8091/v1/":
+        agent_list = [agent["name"] for agent in agents]
+        if "AGiXT" not in agent_list:
+            add_agent(
+                agent_name="AGiXT",
+                provider_settings={},
+                commands={},
+                user=user,
+            )
+            agents = get_agents(user=user)
     return {"agents": agents}
 
 
 @app.get(
     "/api/agent/{agent_name}",
-    tags=["Agent", "Admin"],
+    tags=["Agent"],
     dependencies=[Depends(verify_api_key)],
 )
 async def get_agentconfig(
@@ -184,7 +191,7 @@ async def get_agentconfig(
 
 @app.post(
     "/api/agent/{agent_name}/prompt",
-    tags=["Agent", "Admin"],
+    tags=["Agent"],
     dependencies=[Depends(verify_api_key)],
 )
 async def prompt_agent(
@@ -193,20 +200,19 @@ async def prompt_agent(
     user=Depends(verify_api_key),
     authorization: str = Header(None),
 ):
-    ApiClient = get_api_client(authorization=authorization)
-    agent = Interactions(agent_name=agent_name, user=user, ApiClient=ApiClient)
-    if (
-        "prompt" in agent_prompt.prompt_args
-        and "prompt_name" not in agent_prompt.prompt_args
-    ):
-        agent_prompt.prompt_args["prompt_name"] = agent_prompt.prompt_args["prompt"]
-    if "prompt_name" not in agent_prompt.prompt_args:
-        agent_prompt.prompt_args["prompt_name"] = "Chat"
-    if "prompt_category" not in agent_prompt.prompt_args:
-        agent_prompt.prompt_args["prompt_category"] = "Default"
-    agent_prompt.prompt_args = {k: v for k, v in agent_prompt.prompt_args.items()}
-    response = await agent.run(
-        log_user_input=True,
+    agent = AGiXT(user=user, agent_name=agent_name, api_key=authorization)
+    if "tts" in agent_prompt.prompt_args:
+        agent_prompt.prompt_args["voice_response"] = (
+            str(agent_prompt.prompt_args["tts"]).lower() == "true"
+        )
+        del agent_prompt.prompt_args["tts"]
+    if "context_results" in agent_prompt.prompt_args:
+        agent_prompt.prompt_args["injected_memories"] = int(
+            agent_prompt.prompt_args["context_results"]
+        )
+        del agent_prompt.prompt_args["context_results"]
+    response = await agent.inference(
+        prompt=agent_prompt.prompt_name,
         **agent_prompt.prompt_args,
     )
     return {"response": str(response)}
@@ -214,7 +220,7 @@ async def prompt_agent(
 
 @app.get(
     "/api/agent/{agent_name}/command",
-    tags=["Agent", "Admin"],
+    tags=["Agent"],
     dependencies=[Depends(verify_api_key)],
 )
 async def get_commands(
@@ -229,7 +235,7 @@ async def get_commands(
 
 @app.patch(
     "/api/agent/{agent_name}/command",
-    tags=["Agent", "Admin"],
+    tags=["Agent"],
     dependencies=[Depends(verify_api_key)],
 )
 async def toggle_command(
@@ -271,7 +277,7 @@ async def toggle_command(
 # Get agent browsed links
 @app.get(
     "/api/agent/{agent_name}/browsed_links/{collection_number}",
-    tags=["Agent", "Admin"],
+    tags=["Agent"],
     dependencies=[Depends(verify_api_key)],
 )
 async def get_agent_browsed_links(
@@ -290,7 +296,7 @@ async def get_agent_browsed_links(
 # Delete browsed link from memory
 @app.delete(
     "/api/agent/{agent_name}/browsed_links",
-    tags=["Agent", "Admin"],
+    tags=["Agent"],
     dependencies=[Depends(verify_api_key)],
 )
 async def delete_browsed_link(

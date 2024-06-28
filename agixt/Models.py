@@ -27,6 +27,12 @@ class UserInput(BaseModel):
     injected_memories: Optional[int] = 10
 
 
+class LogInteraction(BaseModel):
+    role: str
+    message: str
+    conversation_name: Optional[str] = ""
+
+
 class Dataset(BaseModel):
     batch_size: int = 5
 
@@ -162,7 +168,7 @@ class UrlInput(BaseModel):
 class FileInput(BaseModel):
     file_name: str
     file_content: str
-    collection_number: Optional[str] = "0"
+    collection_number: Optional[Any] = "0"
 
 
 class TextMemoryInput(BaseModel):
@@ -230,23 +236,33 @@ class ExternalSource(BaseModel):
 
 
 class ConversationHistoryModel(BaseModel):
-    agent_name: str
+    agent_name: Optional[str] = ""
     conversation_name: str
     conversation_content: List[dict] = []
+
+
+class RenameConversationModel(BaseModel):
+    agent_name: str
+    conversation_name: str
+    new_conversation_name: Optional[str] = "-"
 
 
 class TTSInput(BaseModel):
     text: str
 
 
+class WebhookModel(BaseModel):
+    success: str
+
+
 class ConversationHistoryMessageModel(BaseModel):
-    agent_name: str
+    agent_name: Optional[str] = ""
     conversation_name: str
     message: str
 
 
 class UpdateConversationHistoryMessageModel(BaseModel):
-    agent_name: str
+    agent_name: Optional[str] = ""
     conversation_name: str
     message: str
     new_message: str
@@ -304,6 +320,7 @@ class WebhookUser(BaseModel):
     commands: Optional[Dict[str, Any]] = {}
     training_urls: Optional[List[str]] = []
     github_repos: Optional[List[str]] = []
+    zip_file_content: Optional[str] = ""
 
 
 # Auth user models

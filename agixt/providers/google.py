@@ -23,6 +23,7 @@ except ImportError:
     import gtts as ts
 
 from pydub import AudioSegment
+import uuid
 
 
 class GoogleProvider:
@@ -45,6 +46,7 @@ class GoogleProvider:
         return ["llm", "tts", "vision"]
 
     async def inference(self, prompt, tokens: int = 0, images: list = []):
+        new_max_tokens = int(self.MAX_TOKENS) - tokens
         if not self.GOOGLE_API_KEY or self.GOOGLE_API_KEY == "None":
             return "Please set your Google API key in the Agent Management page."
         try:
@@ -56,7 +58,6 @@ class GoogleProvider:
                 model_name=self.AI_MODEL if not images else "gemini-pro-vision",
                 generation_config=generation_config,
             )
-            new_max_tokens = int(self.MAX_TOKENS) - tokens
             new_prompt = []
             if images:
                 for image in images:
@@ -86,12 +87,11 @@ class GoogleProvider:
 
     async def text_to_speech(self, text: str):
         tts = ts.gTTS(text)
-        mp3_path = "speech.mp3"
+        mp3_path = os.path.join(os.getcwd(), "WORKSPACE", f"{uuid.uuid4()}.mp3")
         tts.save(mp3_path)
-        wav_path = "output_speech.wav"
-        AudioSegment.from_mp3(mp3_path).set_frame_rate(16000).export(
-            wav_path, format="wav"
-        )
+        wav_path = os.path.join(os.getcwd(), "WORKSPACE", f"{uuid.uuid4()}.wav")
+        audio = AudioSegment.from_mp3(mp3_path)
+        audio.export(wav_path, format="wav")
         os.remove(mp3_path)
         with open(wav_path, "rb") as f:
             audio_content = f.read()
